@@ -40,9 +40,9 @@ class HistoryFragment : Fragment() {
             historyListItemAdapter.notifyDataSetChanged()
         }
 
-        connection.history.observe(this.viewLifecycleOwner, {
+        connection.history.observe(this.viewLifecycleOwner) {
             historyListItemAdapter.notifyDataSetChanged()
-        })
+        }
 
         return binding.root
     }

@@ -17,6 +17,9 @@ MQTT reflects the inherent physical and cost constraints of device connectivity.
 | SSL / TLS           | :heavy_check_mark: |   | Standard TCP Support | :heavy_check_mark: |
 | Message Persistence | :heavy_check_mark: |   |
 
+## Project status: maintenance mode
+Issues are ignored, but pull requests are not. If you need to get something done, submit a PR!
+
 ## Using this MQTT Android Client
 
 #### Jitpack.io 
@@ -24,18 +27,17 @@ MQTT reflects the inherent physical and cost constraints of device connectivity.
 More details are here https://jitpack.io/#hannesa2/paho.mqtt.android
 
 ```
-  allprojects {
-    repositories {
-      ...
-      maven { url 'https://jitpack.io' }
-    }
+allprojects {
+  repositories {
+    ...
+    maven { url 'https://jitpack.io' }
   }
+}
 ```
 
 ```
 dependencies {
-  implementation 'androidx.legacy:legacy-support-v4:1.0.0'
-  implementation 'com.github.hannesa2:paho.mqtt.android:$latestVersion'
+  implementation "com.github.hannesa2:paho.mqtt.android:$latestVersion"
 }
 ```
 ## Background behavior
@@ -60,7 +62,7 @@ val client = MqttAndroidClient(context, uri, clientId).apply {
 ## License
 
 ```
-Copyright 2024
+Copyright 2025
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

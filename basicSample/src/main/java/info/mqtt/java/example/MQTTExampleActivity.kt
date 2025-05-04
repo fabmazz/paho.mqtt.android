@@ -1,10 +1,18 @@
 package info.mqtt.java.example
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView.LayoutManager
+import com.google.android.material.R
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import info.mqtt.android.service.MqttAndroidClient
 import info.mqtt.android.service.QoS
@@ -20,8 +28,26 @@ import java.util.*
 class MQTTExampleActivity : AppCompatActivity() {
 
     private lateinit var mqttAndroidClient: MqttAndroidClient
-    private lateinit var adapter: HistoryAdapter
+    private lateinit var historyAdapter: HistoryAdapter
     private lateinit var binding: ActivityScrollingBinding
+    private var hasNotificationPermissionGranted = false
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        hasNotificationPermissionGranted = isGranted
+        if (!isGranted) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    if (shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS)) {
+                        showNotificationPermissionRationale()
+                    } else {
+                        showSettingDialog()
+                    }
+                }
+            }
+        } else {
+            Snackbar.make(findViewById(android.R.id.content), "notification permission granted", Snackbar.LENGTH_LONG).setAction("Action", null)
+                .show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,13 +57,19 @@ class MQTTExampleActivity : AppCompatActivity() {
 
         setSupportActionBar(binding.toolbar)
 
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            hasNotificationPermissionGranted = true
+        }
+
         binding.fab.setOnClickListener { publishMessage() }
         val mLayoutManager: LayoutManager = LinearLayoutManager(this)
         binding.historyRecyclerView.layoutManager = mLayoutManager
-        adapter = HistoryAdapter()
-        binding.historyRecyclerView.adapter = adapter
+        historyAdapter = HistoryAdapter()
+        binding.historyRecyclerView.adapter = historyAdapter
         clientId += System.currentTimeMillis()
-        mqttAndroidClient = MqttAndroidClient(applicationContext, serverUri, clientId)
+        mqttAndroidClient = MqttAndroidClient(applicationContext, SERVER_URI, clientId)
         mqttAndroidClient.setCallback(object : MqttCallbackExtended {
             override fun connectComplete(reconnect: Boolean, serverURI: String) {
                 if (reconnect) {
@@ -57,25 +89,26 @@ class MQTTExampleActivity : AppCompatActivity() {
                 addToHistory("Incoming message: " + String(message.payload))
             }
 
-            override fun deliveryComplete(token: IMqttDeliveryToken) {}
+            override fun deliveryComplete(token: IMqttDeliveryToken) = Unit
         })
         val mqttConnectOptions = MqttConnectOptions()
         mqttConnectOptions.isAutomaticReconnect = true
         mqttConnectOptions.isCleanSession = false
-        addToHistory("Connecting: $serverUri")
+        addToHistory("Connecting: $SERVER_URI")
         mqttAndroidClient.connect(mqttConnectOptions, null, object : IMqttActionListener {
             override fun onSuccess(asyncActionToken: IMqttToken) {
-                val disconnectedBufferOptions = DisconnectedBufferOptions()
-                disconnectedBufferOptions.isBufferEnabled = true
-                disconnectedBufferOptions.bufferSize = 100
-                disconnectedBufferOptions.isPersistBuffer = false
-                disconnectedBufferOptions.isDeleteOldestMessages = false
+                val disconnectedBufferOptions = DisconnectedBufferOptions().apply {
+                    isBufferEnabled = true
+                    bufferSize = 100
+                    isPersistBuffer = false
+                    isDeleteOldestMessages = false
+                }
                 mqttAndroidClient.setBufferOpts(disconnectedBufferOptions)
                 subscribeToTopic()
             }
 
             override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                addToHistory("Failed to connect: $serverUri")
+                addToHistory("Failed to connect: $SERVER_URI")
             }
         })
     }
@@ -91,15 +124,15 @@ class MQTTExampleActivity : AppCompatActivity() {
         @SuppressLint("SimpleDateFormat")
         val timestamp = SimpleDateFormat("HH:mm.ss.SSS").format(Date(System.currentTimeMillis()))
         CoroutineScope(Dispatchers.Main).launch {
-            adapter.add("$timestamp $mainText")
+            historyAdapter.add("$timestamp $mainText")
         }
         Snackbar.make(findViewById(android.R.id.content), mainText, Snackbar.LENGTH_LONG).setAction("Action", null).show()
     }
 
     fun subscribeToTopic() {
-        mqttAndroidClient.subscribe(subscriptionTopic, QoS.AtMostOnce.value, null, object : IMqttActionListener {
+        mqttAndroidClient.subscribe(SUBSCRIPTION_TOPIC, QoS.AtMostOnce.value, null, object : IMqttActionListener {
             override fun onSuccess(asyncActionToken: IMqttToken) {
-                addToHistory("Subscribed! $subscriptionTopic")
+                addToHistory("Subscribed! $SUBSCRIPTION_TOPIC")
             }
 
             override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
@@ -108,7 +141,7 @@ class MQTTExampleActivity : AppCompatActivity() {
         })
 
         // THIS DOES NOT WORK!
-        mqttAndroidClient.subscribe(subscriptionTopic, QoS.AtMostOnce.value) { topic, message ->
+        mqttAndroidClient.subscribe(SUBSCRIPTION_TOPIC, QoS.AtMostOnce.value) { topic, message ->
             Timber.d("Message arrived $topic : ${String(message.payload)}")
             addToHistory("Message arrived $message")
         }
@@ -116,10 +149,10 @@ class MQTTExampleActivity : AppCompatActivity() {
 
     private fun publishMessage() {
         val message = MqttMessage()
-        message.payload = publishMessage.toByteArray()
+        message.payload = PUBLISH_MESSAGE.toByteArray()
         if (mqttAndroidClient.isConnected) {
-            mqttAndroidClient.publish(publishTopic, message)
-            addToHistory("Message Published >$publishMessage<")
+            mqttAndroidClient.publish(PUBLISH_TOPIC, message)
+            addToHistory("Message Published >$PUBLISH_MESSAGE<")
             if (!mqttAndroidClient.isConnected) {
                 addToHistory(mqttAndroidClient.bufferedMessageCount.toString() + " messages in buffer.")
             }
@@ -128,11 +161,35 @@ class MQTTExampleActivity : AppCompatActivity() {
         }
     }
 
+    private fun showSettingDialog() {
+        MaterialAlertDialogBuilder(this, R.style.MaterialAlertDialog_Material3)
+            .setTitle("Notification Permission")
+            .setMessage("Notification permission is required, Please allow notification permission from setting").setPositiveButton("Ok") { _, _ ->
+                val intent = Intent(ACTION_APPLICATION_DETAILS_SETTINGS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showNotificationPermissionRationale() {
+        MaterialAlertDialogBuilder(this, R.style.MaterialAlertDialog_Material3)
+            .setTitle("Alert")
+            .setMessage("Notification permission is required, to show notification").setPositiveButton("Ok") { _, _ ->
+                if (Build.VERSION.SDK_INT >= 33) {
+                    notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     companion object {
-        private const val serverUri = "tcp://broker.hivemq.com:1883"
-        private const val subscriptionTopic = "exampleAndroidTopic"
-        private const val publishTopic = "exampleAndroidPublishTopic"
-        private const val publishMessage = "Hello World"
+        private const val SERVER_URI = "tcp://broker.hivemq.com:1883"
+        private const val SUBSCRIPTION_TOPIC = "exampleAndroidTopic"
+        private const val PUBLISH_TOPIC = "exampleAndroidPublishTopic"
+        private const val PUBLISH_MESSAGE = "Hello World"
         private var clientId = "BasicSample"
     }
 }

@@ -1,9 +1,10 @@
+@file:Suppress("unused")
+
 package info.mqtt.android.service
 
 import android.content.*
 import android.os.Bundle
 import android.os.IBinder
-import android.util.SparseArray
 import info.mqtt.android.service.extension.parcelable
 import info.mqtt.android.service.extension.serializable
 import kotlinx.coroutines.CoroutineScope
@@ -41,16 +42,18 @@ import javax.net.ssl.TrustManagerFactory
  *  * disconnect
  *
  */
-class MqttAndroidClient @JvmOverloads constructor(
+class MqttAndroidClient(
     val context: Context, private val serverURI: String, private val clientId: String, ackType: Ack = Ack.AUTO_ACK,
-    private var persistence: MqttClientPersistence? = null
+    private var persistence: MqttClientPersistence? = null,
+    private val pingLogging: Boolean = false,
+    private val keepPingRecords: Int = 1000
 ) : IMqttAsyncClient {
 
     // Listener for when the service is connected or disconnected
     private val serviceConnection = MyServiceConnection()
 
     // We hold the various tokens in a collection and pass identifiers for them to the service
-    private val tokenMap = SparseArray<IMqttToken?>()
+    private val tokenList = mutableListOf<IMqttToken>()
 
     //The acknowledgment that a message has been processed by the application
     private val messageAck = ackType
@@ -60,7 +63,6 @@ class MqttAndroidClient @JvmOverloads constructor(
 
     // An identifier for the underlying client connection, which we can pass to the service
     private var clientHandle: String? = null
-    private var tokenNumber = 0
     private var clientConnectOptions: MqttConnectOptions? = null
     private var connectToken: IMqttToken? = null
 
@@ -217,7 +219,7 @@ class MqttAndroidClient @JvmOverloads constructor(
             context.bindService(serviceStartIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         } else {
             CoroutineScope(Dispatchers.IO).launch {
-                doConnect()
+                doConnect(pingLogging, keepPingRecords)
 
                 //Register receiver to show shoulder tap.
                 if (!receiverRegistered.get()) {
@@ -244,15 +246,16 @@ class MqttAndroidClient @JvmOverloads constructor(
     /**
      * Actually do the mqtt connect operation
      */
-    private fun doConnect() {
+    private fun doConnect(pingLogging: Boolean, keepPingRecords: Int) {
         if (clientHandle == null) {
-            clientHandle = mqttService!!.getClient(serverURI, clientId, context.applicationInfo.packageName, persistence)
+            clientHandle =
+                mqttService!!.getClient(serverURI, clientId, context.applicationInfo.packageName, persistence, pingLogging, keepPingRecords)
         }
         mqttService!!.isTraceEnabled = traceEnabled
         mqttService!!.setTraceCallbackId(clientHandle)
-        val activityToken = storeToken(connectToken)
+        storeToken(connectToken)
         try {
-            mqttService!!.connect(clientHandle!!, clientConnectOptions, activityToken)
+            mqttService!!.connect(clientHandle!!, clientConnectOptions, connectToken)
         } catch (e: Exception) {
             val listener = connectToken!!.actionCallback
             listener?.onFailure(connectToken, e)
@@ -271,8 +274,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun disconnect(): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, null, null)
-        val activityToken = storeToken(token)
-        mqttService!!.disconnect(clientHandle!!, null, activityToken)
+        storeToken(token)
+        mqttService!!.disconnect(clientHandle!!, null, token)
         return token
     }
 
@@ -291,8 +294,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun disconnect(quiesceTimeout: Long): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, null, null)
-        val activityToken = storeToken(token)
-        mqttService!!.disconnect(clientHandle!!, quiesceTimeout, null, activityToken)
+        storeToken(token)
+        mqttService!!.disconnect(clientHandle!!, quiesceTimeout, null, token)
         return token
     }
 
@@ -309,8 +312,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun disconnect(userContext: Any?, callback: IMqttActionListener?): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback)
-        val activityToken = storeToken(token)
-        mqttService!!.disconnect(clientHandle!!, null, activityToken)
+        storeToken(token)
+        mqttService?.disconnect(clientHandle!!, null, token)
         return token
     }
 
@@ -343,8 +346,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun disconnect(quiesceTimeout: Long, userContext: Any?, callback: IMqttActionListener): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback)
-        val activityToken = storeToken(token)
-        mqttService!!.disconnect(clientHandle!!, quiesceTimeout, null, activityToken)
+        storeToken(token)
+        mqttService!!.disconnect(clientHandle!!, quiesceTimeout, null, token)
         return token
     }
 
@@ -404,8 +407,8 @@ class MqttAndroidClient @JvmOverloads constructor(
         message.qos = qos
         message.isRetained = retained
         val token = MqttDeliveryTokenAndroid(this, userContext, callback, message)
-        val activityToken = storeToken(token)
-        val internalToken = mqttService!!.publish(clientHandle!!, topic, payload, QoS.valueOf(qos), retained, null, activityToken)
+        storeToken(token)
+        val internalToken = mqttService!!.publish(clientHandle!!, topic, payload, QoS.valueOf(qos), retained, null, token)
         token.setDelegate(internalToken)
         return token
     }
@@ -466,8 +469,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun publish(topic: String, message: MqttMessage, userContext: Any?, callback: IMqttActionListener?): IMqttDeliveryToken {
         val token = MqttDeliveryTokenAndroid(this, userContext, callback, message)
-        val activityToken = storeToken(token)
-        val internalToken = mqttService!!.publish(clientHandle!!, topic, message, null, activityToken)
+        storeToken(token)
+        val internalToken = mqttService!!.publish(clientHandle!!, topic, message, null, token)
         token.setDelegate(internalToken)
         return token
     }
@@ -518,8 +521,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun subscribe(topic: String, qos: Int, userContext: Any?, callback: IMqttActionListener?): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback, arrayOf(topic))
-        val activityToken = storeToken(token)
-        mqttService!!.subscribe(clientHandle!!, topic, QoS.valueOf(qos), null, activityToken)
+        storeToken(token)
+        mqttService!!.subscribe(clientHandle!!, topic, QoS.valueOf(qos), null, token)
         return token
     }
 
@@ -622,8 +625,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun subscribe(topic: Array<String>, qos: IntArray, userContext: Any?, callback: IMqttActionListener?): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback, topic)
-        val activityToken = storeToken(token)
-        mqttService!!.subscribe(clientHandle!!, topic, qos, null, activityToken)
+        storeToken(token)
+        mqttService!!.subscribe(clientHandle!!, topic, qos, null, token)
         return token
     }
 
@@ -701,8 +704,8 @@ class MqttAndroidClient @JvmOverloads constructor(
         Array<IMqttMessageListener>
     ): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback, topicFilters)
-        val activityToken = storeToken(token)
-        mqttService!!.subscribe(clientHandle!!, topicFilters, qos.map { QoS.valueOf(it) }.toTypedArray(), null, activityToken, messageListeners)
+        storeToken(token)
+        mqttService!!.subscribe(clientHandle!!, topicFilters, qos.map { QoS.valueOf(it) }.toTypedArray(), null, token, messageListeners)
         return token
     }
 
@@ -739,8 +742,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun unsubscribe(topic: String, userContext: Any?, callback: IMqttActionListener?): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback)
-        val activityToken = storeToken(token)
-        mqttService!!.unsubscribe(clientHandle!!, topic, null, activityToken)
+        storeToken(token)
+        mqttService!!.unsubscribe(clientHandle!!, topic, null, token)
         return token
     }
 
@@ -770,8 +773,8 @@ class MqttAndroidClient @JvmOverloads constructor(
      */
     override fun unsubscribe(topic: Array<String>, userContext: Any?, callback: IMqttActionListener?): IMqttToken {
         val token: IMqttToken = MqttTokenAndroid(this, userContext, callback)
-        val activityToken = storeToken(token)
-        mqttService!!.unsubscribe(clientHandle!!, topic, null, activityToken)
+        storeToken(token)
+        mqttService!!.unsubscribe(clientHandle!!, topic, null, token)
         return token
     }
 
@@ -845,6 +848,10 @@ class MqttAndroidClient @JvmOverloads constructor(
         callbacksList.add(callback)
     }
 
+    fun removeCallback(callback: MqttCallback) {
+        callbacksList.remove(callback)
+    }
+
     /**
      * identify the callback to be invoked when making tracing calls back into
      * the Activity
@@ -875,10 +882,13 @@ class MqttAndroidClient @JvmOverloads constructor(
      *
      */
     private fun onReceive(data: Bundle) {
-        if (data.toString().lowercase().contentEquals("exception"))
-            Timber.w(data.toString())
+        val status = data.serializable(MqttServiceConstants.CALLBACK_STATUS) as Status?
+        if (status == Status.ERROR) {
+            Timber.e("$status $data")
+        } else if (data.toString().lowercase().contentEquals("exception"))
+            Timber.w("$status $data")
         else
-            Timber.v(data.toString())
+            Timber.v("$status $data")
         val handleFromIntent = data.getString(MqttServiceConstants.CALLBACK_CLIENT_HANDLE)
         if (handleFromIntent == null || handleFromIntent != clientHandle) {
             return
@@ -952,7 +962,7 @@ class MqttAndroidClient @JvmOverloads constructor(
     /**
      * Process a notification that we have disconnected
      */
-    private fun disconnected(data: Bundle?) {
+    private fun disconnected(data: Bundle) {
         clientHandle = null // avoid reuse!
         val token = removeMqttToken(data)
         token?.let {
@@ -1102,13 +1112,16 @@ class MqttAndroidClient @JvmOverloads constructor(
 
     /**
      * @param token identifying an operation
-     * @return an identifier for the token which can be passed to the Android
-     * Service
      */
     @Synchronized
-    private fun storeToken(token: IMqttToken?): String {
-        tokenMap.put(tokenNumber, token)
-        return (tokenNumber++).toString()
+    private fun storeToken(token: IMqttToken?) {
+        token?.let {
+            val tokenFound = tokenList.find { it == token }
+            if (tokenFound == null) {
+                tokenList.add(token)
+                Timber.d("$token size=${tokenList.size}")
+            }
+        }
     }
 
     /**
@@ -1117,12 +1130,12 @@ class MqttAndroidClient @JvmOverloads constructor(
      * @return the token
      */
     @Synchronized
-    private fun removeMqttToken(data: Bundle?): IMqttToken? {
-        val activityToken = data!!.getString(MqttServiceConstants.CALLBACK_ACTIVITY_TOKEN)
-        if (activityToken != null) {
-            val tokenNumber = activityToken.toInt()
-            val token = tokenMap[tokenNumber]
-            tokenMap.delete(tokenNumber)
+    private fun removeMqttToken(data: Bundle): IMqttToken? {
+        val activityToken = data.getString(MqttServiceConstants.CALLBACK_ACTIVITY_TOKEN)
+        if (activityToken != null && activityToken != "null") {
+            val token = tokenList.find { it.toString() == activityToken }
+            tokenList.remove(token)
+            Timber.d("search=$activityToken ${tokenList.size}")
             return token
         }
         return null
@@ -1134,9 +1147,10 @@ class MqttAndroidClient @JvmOverloads constructor(
      * @return the token
      */
     @Synchronized
-    private fun getMqttToken(data: Bundle?): IMqttToken? {
-        val activityToken = data!!.getString(MqttServiceConstants.CALLBACK_ACTIVITY_TOKEN)
-        return tokenMap[activityToken!!.toInt()]
+    private fun getMqttToken(data: Bundle): IMqttToken? {
+        val activityToken = data.getString(MqttServiceConstants.CALLBACK_ACTIVITY_TOKEN)
+        val token = tokenList.find { it.toString() == activityToken }
+        return token
     }
 
     /**
@@ -1257,7 +1271,7 @@ class MqttAndroidClient @JvmOverloads constructor(
                 serviceBound = true
                 collect()
                 // now that we have the service available, we can actually connect
-                doConnect()
+                doConnect(pingLogging, keepPingRecords)
             }
         }
 
